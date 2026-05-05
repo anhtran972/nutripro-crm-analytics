@@ -1,0 +1,476 @@
+
+/* ============================================================
+   NUTRIPRO — DAX MEASURES TEMPLATE
+   Project  : NutriPro Portfolio Demo
+   Author   : [Your Name]
+   Version  : 1.0  |  Date: 2024-12
+   ------------------------------------------------------------
+   HOW TO USE IN POWER BI:
+   1. Open Power BI Desktop
+   2. Go to Modeling tab → New Table → paste each measure
+      OR use Enter Data to create a "Measures" table, then
+      add each measure via "New Measure"
+   3. In Model View, right-click measure → Display Folder
+      → type the folder name (Financial KPIs / CRM Metrics /
+        Biotech Insights)
+   ============================================================ */
+
+
+/* ============================================================
+   FOLDER 1: FINANCIAL KPIs
+   Business context: Trả lời câu hỏi "Platform đang kiếm tiền
+   như thế nào và từ đâu?" — dùng trong View 1 (Sales Overview)
+   ============================================================ */
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Total Revenue
+-- Business meaning: Tổng doanh thu tích lũy toàn bộ giao dịch.
+-- Dùng làm headline KPI card trên đầu dashboard.
+-- Interview note: "Đây là north star metric — mọi phân tích
+-- khác đều serve để giải thích con số này tăng hay giảm."
+-- ─────────────────────────────────────────────────────────────
+Total Revenue =
+SUM ( fact_sales[purchase_amount] )
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: ARPU (Average Revenue Per User)
+-- Business meaning: Mỗi user trung bình đóng góp bao nhiêu
+-- doanh thu. Chỉ số này dùng để benchmark pricing strategy
+-- và so sánh hiệu quả giữa các nhóm sản phẩm (ebook vs coaching).
+-- Interview note: "ARPU tăng nghĩa là hoặc user mua nhiều hơn,
+-- hoặc ta đã upsell thành công sang tier cao hơn."
+-- ─────────────────────────────────────────────────────────────
+ARPU =
+DIVIDE (
+    SUM ( fact_sales[purchase_amount] ),
+    DISTINCTCOUNT ( fact_sales[user_id] ),
+    0
+)
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: AOV (Average Order Value)
+-- Business meaning: Giá trị trung bình mỗi đơn hàng.
+-- Khác với ARPU: AOV đo từng transaction, ARPU đo theo user.
+-- AOV cao → user mua ít nhưng mua đắt (coaching, meal plan).
+-- AOV thấp → user mua nhiều lần nhưng giá trị nhỏ (ebook).
+-- Interview note: "Theo dõi AOV theo order_type giúp quyết định
+-- nên push product nào trong campaign tiếp theo."
+-- ─────────────────────────────────────────────────────────────
+AOV =
+DIVIDE (
+    SUM ( fact_sales[purchase_amount] ),
+    COUNTROWS ( fact_sales ),
+    0
+)
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: MRR (Monthly Recurring Revenue)
+-- Business meaning: Doanh thu định kỳ hàng tháng từ user active.
+-- Là chỉ số quan trọng nhất để pitch cho investor vì nó phản
+-- ánh tính bền vững của business, không phải doanh thu one-off.
+-- Interview note: "MRR giúp phân biệt revenue thật (subscription)
+-- với revenue ảo (one-time spike từ promotion)."
+-- ─────────────────────────────────────────────────────────────
+MRR =
+VAR _current_month_start =
+    STARTOFMONTH ( LASTDATE ( fact_sales[sale_date] ) )
+RETURN
+    CALCULATE (
+        SUM ( fact_sales[purchase_amount] ),
+        fact_sales[sale_date] >= _current_month_start
+    )
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Revenue MoM Growth %
+-- Business meaning: Tốc độ tăng trưởng doanh thu tháng này
+-- so với tháng trước. Là chỉ số investor hỏi đầu tiên.
+-- Giá trị dương = đang tăng trưởng, âm = cần xem lại chiến lược.
+-- Interview note: "Kết hợp với Cohort Retention để xác định
+-- growth đến từ new users hay existing users mua thêm."
+-- ─────────────────────────────────────────────────────────────
+Revenue MoM Growth % =
+VAR _current_rev =
+    CALCULATE (
+        SUM ( fact_sales[purchase_amount] ),
+        DATESMTD ( fact_sales[sale_date] )
+    )
+VAR _prev_rev =
+    CALCULATE (
+        SUM ( fact_sales[purchase_amount] ),
+        DATEADD ( DATESMTD ( fact_sales[sale_date] ), -1, MONTH )
+    )
+RETURN
+    DIVIDE ( _current_rev - _prev_rev, _prev_rev, 0 )
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: LTV (Customer Lifetime Value)
+-- Business meaning: Tổng giá trị một user mang lại trong
+-- toàn bộ vòng đời sử dụng platform.
+-- LTV > CAC (Cost to Acquire Customer) = business viable.
+-- Trong demo này dùng ARPU × lifespan ước tính 18 tháng.
+-- Interview note: "LTV là lý do tại sao ta có thể chi nhiều
+-- hơn để giữ Champion users — họ mang lại value lâu dài."
+-- ─────────────────────────────────────────────────────────────
+LTV =
+VAR _avg_monthly_arpu =
+    DIVIDE (
+        SUM ( fact_sales[purchase_amount] ),
+        DISTINCTCOUNT ( fact_sales[user_id] ) * 12,
+        0
+    )
+VAR _avg_lifespan_months = 18
+    -- NOTE: Thay bằng AVERAGE(dim_users[actual_lifespan_months])
+    -- khi có dữ liệu thực tế từ production
+RETURN
+    _avg_monthly_arpu * _avg_lifespan_months
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Revenue by Diet Type (helper — dùng với slicer)
+-- Business meaning: Phân tích diet type nào mang lại doanh
+-- thu cao nhất → định hướng content và marketing budget.
+-- Keto & High-protein users thường chi nhiều hơn cho coaching.
+-- Interview note: "Cross với Biotech Insight để giải thích
+-- WHY Keto revenue cao nhưng churn cũng cao."
+-- ─────────────────────────────────────────────────────────────
+Revenue by Diet Type =
+CALCULATE (
+    SUM ( fact_sales[purchase_amount] ),
+    ALLEXCEPT ( dim_users, dim_users[diet_type] )
+)
+
+
+/* ============================================================
+   FOLDER 2: CRM METRICS
+   Business context: Trả lời câu hỏi "Platform có đang giữ
+   được user không?" — dùng trong View 2 (CRM Retention)
+   ============================================================ */
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Retention Rate 30d
+-- Business meaning: % users còn hoạt động trong 30 ngày qua.
+-- Retention là chỉ số sức khỏe quan trọng nhất của health app:
+-- nếu user không quay lại, mọi acquisition cost đều lãng phí.
+-- Benchmark ngành: Health app retention 30d ~25-35% là tốt.
+-- Interview note: "Retention thấp ở tuần 3 là warning signal
+-- đặc thù của nutrition apps — giải thích bằng Biotech Insight."
+-- ─────────────────────────────────────────────────────────────
+Retention Rate 30d =
+VAR _snapshot = MAX ( fact_engagement[session_date] )
+VAR _active_users =
+    CALCULATE (
+        DISTINCTCOUNT ( fact_engagement[user_id] ),
+        fact_engagement[session_date] >= _snapshot - 30
+    )
+VAR _total_users = DISTINCTCOUNT ( dim_users[user_id] )
+RETURN
+    DIVIDE ( _active_users, _total_users, 0 )
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Retention Rate 7d
+-- Business meaning: Retention ngắn hạn — user có quay lại
+-- trong tuần đầu sau khi đăng ký không?
+-- 7d retention là dự báo tốt nhất cho long-term retention.
+-- Interview note: "Nếu user không login lại trong 7 ngày đầu,
+-- xác suất churn trong 30 ngày là >70% theo research."
+-- ─────────────────────────────────────────────────────────────
+Retention Rate 7d =
+VAR _snapshot = MAX ( fact_engagement[session_date] )
+VAR _active_7d =
+    CALCULATE (
+        DISTINCTCOUNT ( fact_engagement[user_id] ),
+        fact_engagement[session_date] >= _snapshot - 7
+    )
+VAR _total_users = DISTINCTCOUNT ( dim_users[user_id] )
+RETURN
+    DIVIDE ( _active_7d, _total_users, 0 )
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: High Churn Risk Users (count)
+-- Business meaning: Số users có churn_risk_score >= 70,
+-- tức đang "at risk" và cần CRM intervention ngay.
+-- Đây là input cho CRM team để trigger push notification.
+-- Interview note: "Tôi set threshold 70 dựa trên phân phối
+-- score — top ~25% users có risk cao nhất."
+-- ─────────────────────────────────────────────────────────────
+High Churn Risk Users =
+CALCULATE (
+    COUNTROWS ( fact_engagement ),
+    fact_engagement[churn_risk_level] = "High Risk"
+)
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Champion User %
+-- Business meaning: % users thuộc segment Champion trong RFM.
+-- Champion = mua gần đây, mua nhiều, chi nhiều.
+-- Target: Champion % nên >= 15% để platform healthy.
+-- Interview note: "Champion users là brand advocates tự nhiên —
+-- họ có NPS cao nhất và likelihood giới thiệu bạn bè cao nhất."
+-- ─────────────────────────────────────────────────────────────
+Champion User % =
+DIVIDE (
+    CALCULATE (
+        COUNTROWS ( fact_engagement ),
+        fact_engagement[rfm_segment] = "Champion"
+    ),
+    COUNTROWS ( fact_engagement ),
+    0
+)
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: At Risk Revenue
+-- Business meaning: Tổng doanh thu từ users thuộc "At Risk"
+-- segment — đây là revenue đang có nguy cơ mất.
+-- Nếu At Risk Revenue > 20% total revenue → cần hành động ngay.
+-- Interview note: "Con số này justify budget cho CRM campaign:
+-- chi $X để giữ $Y revenue đang bị đe dọa."
+-- ─────────────────────────────────────────────────────────────
+At Risk Revenue =
+CALCULATE (
+    SUM ( fact_sales[purchase_amount] ),
+    FILTER (
+        fact_engagement,
+        fact_engagement[rfm_segment] = "At Risk"
+    )
+)
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Avg Churn Risk Score
+-- Business meaning: Điểm rủi ro churn trung bình toàn platform.
+-- Score tăng theo thời gian = platform đang già hóa user base.
+-- Nên theo dõi trend này weekly, không phải một snapshot.
+-- Interview note: "Avg score < 40 là healthy. Nếu > 55,
+-- platform cần re-engagement campaign toàn diện."
+-- ─────────────────────────────────────────────────────────────
+Avg Churn Risk Score =
+AVERAGE ( fact_engagement[churn_risk_score] )
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Meal Log Engagement Rate
+-- Business meaning: % users có meal_log_count > 0,
+-- tức đang dùng tính năng core của NutriPro.
+-- Đây là leading indicator của retention: user log bữa ăn
+-- thường xuyên → ít churn hơn 3× so với user không log.
+-- Interview note: "Feature adoption rate thường predict
+-- retention tốt hơn cả login frequency."
+-- ─────────────────────────────────────────────────────────────
+Meal Log Engagement Rate =
+DIVIDE (
+    CALCULATE (
+        COUNTROWS ( fact_engagement ),
+        fact_engagement[meal_log_count] > 0
+    ),
+    COUNTROWS ( fact_engagement ),
+    0
+)
+
+
+/* ============================================================
+   FOLDER 3: BIOTECH INSIGHTS
+   Business context: Các measures này tận dụng kiến thức sinh
+   học / dinh dưỡng để tạo ra insights mà DA thuần túy không
+   có — đây là differentiator trong portfolio và interview.
+   ============================================================ */
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Week 3 Churn Rate (Habit Formation Threshold)
+-- Business meaning: Tỷ lệ churn xảy ra trong ngày 14-21
+-- kể từ khi user join.
+-- BIOTECH CONTEXT: Nghiên cứu habit formation (Lally et al.)
+-- cho thấy tuần 3 là điểm "make or break" của thói quen mới.
+-- Với nutrition app, đây là lúc novelty effect mất đi và
+-- user cần support để duy trì hành vi.
+-- Interview note: "Insight này cho phép tôi đề xuất trigger
+-- automated CRM message vào ngày 14-18 — thay vì chờ đến
+-- lúc user đã churn mới react."
+-- ─────────────────────────────────────────────────────────────
+Week 3 Churn Rate =
+VAR _week3_users =
+    CALCULATE (
+        DISTINCTCOUNT ( fact_engagement[user_id] ),
+        FILTER (
+            fact_engagement,
+            DATEDIFF (
+                RELATED ( dim_users[join_date] ),
+                fact_engagement[session_date],
+                DAY
+            ) BETWEEN 14 AND 21
+        )
+    )
+VAR _week3_churned =
+    CALCULATE (
+        DISTINCTCOUNT ( fact_engagement[user_id] ),
+        FILTER (
+            fact_engagement,
+            DATEDIFF (
+                RELATED ( dim_users[join_date] ),
+                fact_engagement[session_date],
+                DAY
+            ) BETWEEN 14 AND 21
+                && fact_engagement[churn_risk_level] = "High Risk"
+        )
+    )
+RETURN
+    DIVIDE ( _week3_churned, _week3_users, 0 )
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Keto Churn Premium
+-- Business meaning: Chênh lệch churn score giữa Keto users
+-- và non-Keto users.
+-- BIOTECH CONTEXT: "Keto flu" (tuần 2-3) là hiện tượng sinh lý
+-- có thật — cơ thể chuyển từ glycolysis sang ketosis gây mệt
+-- mỏi, đau đầu, giảm motivation. Đây là giai đoạn user dễ
+-- bỏ cuộc nhất, và DA thuần túy sẽ chỉ thấy "Keto có churn
+-- cao hơn" mà không giải thích được WHY.
+-- Interview note: "Tôi có thể đề xuất giải pháp cụ thể:
+-- gửi nội dung giáo dục về keto flu vào ngày 10-14 để
+-- normalize trải nghiệm và giảm churn."
+-- ─────────────────────────────────────────────────────────────
+Keto Churn Premium =
+VAR _keto_churn =
+    CALCULATE (
+        AVERAGE ( fact_engagement[churn_risk_score] ),
+        dim_users[diet_type] = "Keto"
+    )
+VAR _non_keto_churn =
+    CALCULATE (
+        AVERAGE ( fact_engagement[churn_risk_score] ),
+        dim_users[diet_type] <> "Keto"
+    )
+RETURN
+    _keto_churn - _non_keto_churn
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Weight Goal vs Spend Correlation Index
+-- Business meaning: So sánh mức chi tiêu trung bình giữa
+-- users có weight_goal < -10kg (muốn giảm nhiều) vs phần còn lại.
+-- BIOTECH CONTEXT: Users có mục tiêu giảm cân cao (>10kg)
+-- thường có pain point lớn hơn → willingness to pay cao hơn
+-- cho coaching chuyên sâu.
+-- Interview note: "Index > 1.5 nghĩa là nhóm này chi nhiều
+-- hơn 50% — đây là high-value segment cần ưu tiên trong
+-- CRM và upsell campaign."
+-- ─────────────────────────────────────────────────────────────
+Weight Goal Spend Index =
+VAR _high_goal_spend =
+    CALCULATE (
+        AVERAGE ( fact_sales[purchase_amount] ),
+        FILTER ( dim_users, dim_users[weight_goal] <= -10 )
+    )
+VAR _normal_goal_spend =
+    CALCULATE (
+        AVERAGE ( fact_sales[purchase_amount] ),
+        FILTER ( dim_users, dim_users[weight_goal] > -10 )
+    )
+RETURN
+    DIVIDE ( _high_goal_spend, _normal_goal_spend, 1 )
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Meal Log to Purchase Conversion Rate
+-- Business meaning: % users có meal_log_count >= 10 (engaged)
+-- đã thực hiện ít nhất 1 giao dịch.
+-- BIOTECH CONTEXT: Meal logging là hành vi tích cực —
+-- nghiên cứu về self-monitoring in dietary behavior cho thấy
+-- người ghi chép bữa ăn có compliance cao hơn và sẵn sàng
+-- đầu tư vào sức khỏe hơn.
+-- Interview note: "Measure này chứng minh rằng feature adoption
+-- (meal log) có tương quan với revenue — justify việc đầu tư
+-- vào UX của tính năng này."
+-- ─────────────────────────────────────────────────────────────
+Meal Log to Purchase Conversion =
+VAR _engaged_buyers =
+    CALCULATE (
+        DISTINCTCOUNT ( fact_sales[user_id] ),
+        FILTER (
+            fact_engagement,
+            fact_engagement[meal_log_count] >= 10
+        )
+    )
+VAR _engaged_users =
+    CALCULATE (
+        COUNTROWS ( fact_engagement ),
+        fact_engagement[meal_log_count] >= 10
+    )
+RETURN
+    DIVIDE ( _engaged_buyers, _engaged_users, 0 )
+
+
+-- ─────────────────────────────────────────────────────────────
+-- Measure: Nutritionist Specialization Revenue Lift
+-- Business meaning: Chênh lệch doanh thu khi user được ghép
+-- với nutritionist đúng chuyên môn diet_type vs không phù hợp.
+-- BIOTECH CONTEXT: Personalization trong nutrition không chỉ
+-- là marketing — dietary advice có tính cá thể cao (individual
+-- metabolic response). User được tư vấn đúng chuyên môn có
+-- outcome tốt hơn → satisfaction cao → chi tiêu nhiều hơn.
+-- Interview note: "Đây là business case cho feature 'smart
+-- matching' — ghép user với nutritionist phù hợp."
+-- ─────────────────────────────────────────────────────────────
+Nutritionist Specialization Revenue Lift =
+VAR _matched_rev =
+    CALCULATE (
+        AVERAGE ( fact_sales[purchase_amount] ),
+        FILTER (
+            fact_sales,
+            fact_sales[order_type] = "coaching"
+                && fact_sales[nutritionist_id] <> BLANK ()
+        )
+    )
+VAR _avg_coaching_rev =
+    CALCULATE (
+        AVERAGE ( fact_sales[purchase_amount] ),
+        fact_sales[order_type] = "coaching"
+    )
+RETURN
+    DIVIDE ( _matched_rev - _avg_coaching_rev, _avg_coaching_rev, 0 )
+
+
+/* ============================================================
+   QUICK REFERENCE — MEASURE MAP
+   ============================================================
+
+   FINANCIAL KPIs
+   ├── Total Revenue          → KPI card, headline metric
+   ├── ARPU                   → KPI card + trend line
+   ├── AOV                    → KPI card, filter by order_type
+   ├── MRR                    → KPI card, time intelligence
+   ├── Revenue MoM Growth %   → KPI card with conditional formatting
+   ├── LTV                    → KPI card, compare vs CAC
+   └── Revenue by Diet Type   → Donut chart
+
+   CRM METRICS
+   ├── Retention Rate 30d     → KPI card + benchmark line
+   ├── Retention Rate 7d      → KPI card
+   ├── High Churn Risk Users  → KPI card with alert color
+   ├── Champion User %        → KPI card
+   ├── At Risk Revenue        → KPI card with red accent
+   ├── Avg Churn Risk Score   → Gauge visual
+   └── Meal Log Engagement    → KPI card
+
+   BIOTECH INSIGHTS
+   ├── Week 3 Churn Rate      → Annotated line chart
+   ├── Keto Churn Premium     → Bar comparison chart
+   ├── Weight Goal Spend Index→ Scatter plot
+   ├── Meal Log → Purchase    → Funnel visual
+   └── NTR Specialization Lift→ Bar chart, Page 3
+
+   ============================================================
+   END OF FILE — NutriPro DAX Measures v1.0
+   ============================================================ */
